@@ -1,0 +1,22 @@
+{
+	admin off
+}
+
+# Single auth boundary for LAN clients and the life-app backend on server.home.
+# Every request must carry:  Authorization: Bearer <SHARED_TOKEN>
+#
+# Routes:
+#   /v1/*   → LM Studio on the GPU PC  (LLM, embeddings — OpenAI-compatible API)
+#   /dino/* → dino-worker on the GPU PC (DINOv3 image embeddings, prefix stripped)
+:8088 {
+	@unauthed not header Authorization "Bearer {$SHARED_TOKEN}"
+	respond @unauthed "Unauthorized" 401
+
+	handle_path /dino/* {
+		reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_DINO_PORT:8000}
+	}
+
+	handle {
+		reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_LMSTUDIO_PORT:1234}
+	}
+}

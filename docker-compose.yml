@@ -1,0 +1,35 @@
+# gpu-share — inference gateway, runs on server.home.
+#
+# Caddy is the single auth boundary: bearer token on every request, then
+# routes /v1/* to LM Studio and /dino/* to the dino-worker on the GPU PC (LAN).
+#
+# The GPU PC (RTX 3090, Windows, no Docker) runs LM Studio and the dino-worker
+# FastAPI process natively via the C# agent — see README for the native setup.
+#
+# The dino-worker Docker image is built by .github/workflows/build-push.yml and
+# pushed to GHCR. It is not deployed here (no GPU on server.home) but is
+# available at ghcr.io/${GHCR_OWNER:-jsfrouws}/gpu-share-dino:latest for future
+# GPU-capable Linux nodes.
+#
+# Updates: host-wide Watchtower watches caddy; no extra label needed (watch-all).
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: gpu-share-caddy
+    restart: unless-stopped
+    environment:
+      - SHARED_TOKEN=${SHARED_TOKEN}
+      - GPU_PC_HOST=${GPU_PC_HOST}
+      - GPU_PC_LMSTUDIO_PORT=${GPU_PC_LMSTUDIO_PORT:-1234}
+      - GPU_PC_DINO_PORT=${GPU_PC_DINO_PORT:-8000}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports:
+      # Single front door for the life-app backend and LAN clients.
+      # Also the target for the GPU PC's cloudflared inference tunnel (Phase 3).
+      - "8088:8088"
+
+volumes:
+  caddy-data:

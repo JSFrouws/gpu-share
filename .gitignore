@@ -1,0 +1,7 @@
+.env
+*.pyc
+__pycache__/
+dist/
+agent/bin/
+agent/obj/
+agent/agent.log
