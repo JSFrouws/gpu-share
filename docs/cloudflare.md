@@ -37,7 +37,7 @@ intact and avoids exposing LM Studio's API directly.
 In the Cloudflare Zero Trust dashboard (tunnel → Public Hostnames):
 
 ```
-Hostname: api.frouws-house.com
+Hostname: inf.frouws-house.com
 Service:  http://server.home:8088
 ```
 
@@ -45,7 +45,7 @@ Or in `config.yml` if you use a file-based config:
 
 ```yaml
 ingress:
-  - hostname: api.frouws-house.com
+  - hostname: inf.frouws-house.com
     service: http://server.home:8088
   - service: http_status:404
 ```
@@ -57,7 +57,7 @@ ingress:
 ## 3. Protect with Cloudflare Access
 
 In **Zero Trust → Access → Applications**, add a self-hosted app for
-`api.frouws-house.com` with a policy matching your identity (email, group, etc.).
+`inf.frouws-house.com` with a policy matching your identity (email, group, etc.).
 
 For programmatic clients (scripts, life-app backend), create an **Access service
 token** and send its headers on every request:
@@ -72,7 +72,7 @@ Authorization: Bearer <SHARED_TOKEN>
 
 ```bash
 # LLM via the public endpoint
-curl https://api.frouws-house.com/v1/chat/completions \
+curl https://inf.frouws-house.com/v1/chat/completions \
   -H "CF-Access-Client-Id: $CF_ID" \
   -H "CF-Access-Client-Secret: $CF_SECRET" \
   -H "Authorization: Bearer $SHARED_TOKEN" \
@@ -80,7 +80,7 @@ curl https://api.frouws-house.com/v1/chat/completions \
   -d '{"model":"gemma-3-27b","messages":[{"role":"user","content":"hi"}]}'
 
 # DINOv3 embedding
-curl https://api.frouws-house.com/dino/embed \
+curl https://inf.frouws-house.com/dino/embed \
   -H "CF-Access-Client-Id: $CF_ID" \
   -H "CF-Access-Client-Secret: $CF_SECRET" \
   -H "Authorization: Bearer $SHARED_TOKEN" \

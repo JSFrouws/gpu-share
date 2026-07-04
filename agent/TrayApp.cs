@@ -47,8 +47,10 @@ class TrayApp : ApplicationContext
         };
         _modeItem.Click += (_, _) => { if (_gpuOn) TurnGpuOff(); else TurnGpuOn(); };
 
-        _tunnelItem = new ToolStripMenuItem("Enable Public Tunnel") { Enabled = false };
-        _tunnelItem.Click += (_, _) => { if (_tunnelOn) TurnTunnelOff(); else TurnTunnelOn(); };
+        // Public tunnel is gated server-side (Caddy on server.home checks the
+        // gate flag toggled via the life-app) — no cloudflared runs here, so
+        // this item is informational only.
+        _tunnelItem = new ToolStripMenuItem("Public tunnel: via life-app") { Enabled = false };
 
         var shutdownItem = new ToolStripMenuItem("Shutdown PC");
         shutdownItem.Click += (_, _) =>
@@ -86,6 +88,7 @@ class TrayApp : ApplicationContext
             ContextMenuStrip = menu,
             Visible = true,
         };
+        _tray.DoubleClick += (_, _) => { if (_gpuOn) TurnGpuOff(); else TurnGpuOn(); };
         UpdateIcon();
 
         // ── UI-thread timer: drain the command queue + refresh icon ──────────
@@ -238,8 +241,6 @@ class TrayApp : ApplicationContext
 
         _statusItem.Text = status;
         _modeItem.Text = _gpuOn ? "Stop Inference  (gaming mode)" : "Start Inference  (LAN)";
-        _tunnelItem.Text = _tunnelOn ? "Disable Public Tunnel" : "Enable Public Tunnel";
-        _tunnelItem.Enabled = _gpuOn || _tunnelOn;
 
         var oldIcon = _tray.Icon;
         _tray.Icon = MakeIcon(color, label);

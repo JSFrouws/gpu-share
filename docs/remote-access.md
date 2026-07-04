@@ -5,43 +5,46 @@ client; Option B is a zero-config personal path for LM Studio users.
 
 ## Option A — Cloudflare tunnel (any OpenAI-compatible client)
 
-### One-time setup on the GPU PC (tunnel host)
+### How it's wired (already live)
 
-1. Download `cloudflared.exe` from Cloudflare's release page to
-   `C:\Tools\cloudflared.exe` (the path in `agent/appsettings.json`).
-2. In **Cloudflare Zero Trust → Networks → Tunnels**, create a tunnel and copy
-   its token.
-3. Add a public hostname to the tunnel:
-   ```
-   Hostname: api.frouws-house.com
-   Service:  http://server.home:8088
-   ```
-   This targets Caddy on server.home, keeping the bearer-token boundary intact.
-   Never point it directly at LM Studio (`:1234`) — LM Studio has no auth.
-4. Put the token in `agent/appsettings.json`:
-   ```json
-   "cloudflared": {
-     "executable": "C:\\Tools\\cloudflared.exe",
-     "args": ["tunnel", "run", "--token", "<TUNNEL_TOKEN>"]
-   }
-   ```
-   Restart the tray agent. The "Enable Public Tunnel" toggle (tray or life-app)
-   now starts/stops the tunnel.
-5. In **Zero Trust → Access → Applications**, add a self-hosted app for the
-   hostname. Add a policy for your e-mail (browser use) and create a
-   **service token** for scripts.
+The existing `cloudflared` systemd service on **server.home** carries the
+public hostname — nothing runs on the GPU PC:
+
+```
+Hostname: inf.frouws-house.com
+Service:  http://localhost:8088     (Caddy, on the same host)
+```
+
+Never point a hostname directly at LM Studio (`:1234`) — LM Studio has no auth.
+
+**Tunnel toggle** — the life-app tunnel button flips the flag file
+`gate/tunnel-enabled` (via `/machine/tunnel/on|off`). Caddy 403s any request
+that arrived through Cloudflare (`CF-Connecting-IP` header present) while the
+flag is absent. LAN traffic is never gated, and the toggle works even when the
+GPU PC is off.
+
+Optional hardening: in **Zero Trust → Access → Applications**, add a
+self-hosted app for the hostname with an e-mail policy (browser use) and a
+**service token** for scripts. Without it, the `SHARED_TOKEN` bearer check is
+the single auth layer.
 
 ### On the target PC (client)
 
 Configure any OpenAI-compatible client (openai SDK, curl, LangChain, …):
 
 ```
-Base URL: https://api.frouws-house.com/v1
+Base URL: https://inf.frouws-house.com/v1
 Headers:
+  Authorization:           Bearer <SHARED_TOKEN>
+  # plus, only if Cloudflare Access is configured:
   CF-Access-Client-Id:     <service-token-id>.access
   CF-Access-Client-Secret: <service-token-secret>
-  Authorization:           Bearer <SHARED_TOKEN>
 ```
+
+Works today: `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`,
+`/v1/models`, `/dino/*`. Not yet: `/v1/audio/transcriptions` — LM Studio has
+not shipped its STT endpoint (see TODO.md); the proxy will pass it through
+automatically once it exists.
 
 `SHARED_TOKEN` lives in `/home/ubuntu/webapps/gpu-share/.env` on server.home
 and is checked by Caddy on every request. The API paths are the standard

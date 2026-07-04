@@ -5,7 +5,19 @@ pushes there) but only *reports* gpu-share needs here — this repo has its own
 pending local edits and its own build/deploy path (manual `dotnet publish` +
 replace the running exe on the GPU PC; not part of the GHCR/Watchtower pipeline).
 
-_No open items._
+## Open
+
+- **Remote STT (whisper)** — LM Studio 0.4.18 does NOT implement
+  `POST /v1/audio/transcriptions` (verified: same "Unexpected endpoint" error
+  as a bogus path; upstream feature request lmstudio-ai/lms#320 still open, and
+  lmstudio.ai/transcribe says "coming soon"). `whisper-large-v3` appears in
+  `/v1/models` but is only usable inside the LM Studio UI. Options, in order
+  of preference:
+  1. Wait for the LM Studio update — the Caddy proxy forwards all paths, so
+     the endpoint will work remotely the moment LM Studio ships it. Zero work.
+  2. Run a sidecar STT server on the GPU PC (e.g. `speaches` /
+     faster-whisper-server, OpenAI-compatible) supervised by the agent like
+     dino-worker, and route `/v1/audio/*` to it in the Caddyfile.
 
 ## Done
 
