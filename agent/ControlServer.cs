@@ -72,6 +72,23 @@ class ControlServer : IDisposable
                 return;
             }
 
+            if (req.HttpMethod == "GET" && path == "/models/state")
+            {
+                // LM Studio's native (non-OpenAI) list: includes per-model
+                // "state": "loaded"|"not-loaded" so life-os can show whether a
+                // model is actually in VRAM vs. just present on disk.
+                try
+                {
+                    var json = _lmHttp.GetStringAsync("http://127.0.0.1:1234/api/v0/models").GetAwaiter().GetResult();
+                    Reply(res, 200, json, "application/json");
+                }
+                catch (Exception)
+                {
+                    Reply(res, 503, "LM Studio not running");
+                }
+                return;
+            }
+
             if (req.HttpMethod == "GET" && path == "/status")
             {
                 Reply(res, 200, JsonSerializer.Serialize(new

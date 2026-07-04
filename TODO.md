@@ -21,6 +21,11 @@ replace the running exe on the GPU PC; not part of the GHCR/Watchtower pipeline)
 
 ## Done
 
+- **`GET /models/state`** — proxies LM Studio's native `GET /api/v0/models`
+  (verified working on 0.4.18), which includes per-model
+  `"state": "loaded"|"not-loaded"` plus arch/quant/context info. Deployed
+  2026-07-04. Life-os forwards it as `GET /machine/models/state`; the app can
+  replace its ~60s client-side timer with the real load state.
 - **`/power/sleep`** — handler in `ControlServer.cs`, deployed in the running
   exe (2026-06-30). Triggers `rundll32 powrprof.dll,SetSuspendState 0,1,0`.
   If it silently no-ops, see git history of this file for the P/Invoke fallback
