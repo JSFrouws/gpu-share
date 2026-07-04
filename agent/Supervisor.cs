@@ -61,7 +61,7 @@ class Supervisor(string name, ProcessDef def)
         finally { _proc = null; }
     }
 
-    private static void Log(string msg) =>
+    internal static void Log(string msg) =>
         File.AppendAllText(
             Path.Combine(AppContext.BaseDirectory, "agent.log"),
             $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}{Environment.NewLine}");

@@ -8,6 +8,7 @@ namespace GpuAgent;
 class ControlServer : IDisposable
 {
     private readonly HttpListener _http = new();
+    private static readonly HttpClient _lmHttp = new() { Timeout = TimeSpan.FromSeconds(4) };
     private readonly string _token;
     private readonly TrayApp _tray;
     private readonly CancellationTokenSource _cts = new();
@@ -56,6 +57,21 @@ class ControlServer : IDisposable
 
             var path = req.Url?.AbsolutePath ?? "/";
 
+            if (req.HttpMethod == "GET" && path == "/models")
+            {
+                // Proxy LM Studio's model list so life-os can populate its picker.
+                try
+                {
+                    var json = _lmHttp.GetStringAsync("http://127.0.0.1:1234/v1/models").GetAwaiter().GetResult();
+                    Reply(res, 200, json, "application/json");
+                }
+                catch (Exception)
+                {
+                    Reply(res, 503, "LM Studio not running");
+                }
+                return;
+            }
+
             if (req.HttpMethod == "GET" && path == "/status")
             {
                 Reply(res, 200, JsonSerializer.Serialize(new
@@ -80,6 +96,11 @@ class ControlServer : IDisposable
                     Reply(res, 200, "ok"); return;
                 case "/power/hibernate":
                     Process.Start(new ProcessStartInfo("shutdown") { Arguments = "/h", UseShellExecute = true });
+                    Reply(res, 200, "ok"); return;
+                case "/power/sleep":
+                    // shutdown.exe has no sleep (S3) flag — SetSuspendState via rundll32 is the
+                    // standard command-line trigger. Args: hibernate=0, forceCritical=1, disableWakeEvent=0.
+                    Process.Start(new ProcessStartInfo("rundll32.exe") { Arguments = "powrprof.dll,SetSuspendState 0,1,0", UseShellExecute = true });
                     Reply(res, 200, "ok"); return;
             }
 

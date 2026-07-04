@@ -14,10 +14,9 @@ class Config
 {
     public int ControlPort { get; set; } = 9000;
     public string BearerToken { get; set; } = "change-me";
-    public ProcessDef LmStudio { get; set; } = new()
-    {
-        Executable = @"%LOCALAPPDATA%\Programs\LM-Studio\LM Studio.exe"
-    };
+    public string LmsPath { get; set; } = @"%USERPROFILE%\.lmstudio\bin\lms.exe";
+    // Model key as shown by 'lms ls'. Leave empty to skip auto-load (model must be pre-loaded in LM Studio GUI).
+    public string LmsModel { get; set; } = "";
     public ProcessDef DinoWorker { get; set; } = new()
     {
         Executable = @".venv\Scripts\uvicorn.exe",

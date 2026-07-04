@@ -15,7 +15,6 @@ class TrayApp : ApplicationContext
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _modeItem;
     private readonly ToolStripMenuItem _tunnelItem;
-    private readonly Supervisor _lmStudio;
     private readonly Supervisor _dino;
     private readonly Supervisor _cloudflared;
     private readonly ControlServer _server;
@@ -29,14 +28,13 @@ class TrayApp : ApplicationContext
 
     public bool GpuHandlerOn => _gpuOn;
     public bool TunnelOn => _tunnelOn;
-    public bool LmRunning => _lmStudio.IsRunning;
+    public bool LmRunning => IsPortOpen(1234);
     public bool DinoRunning => _dino.IsRunning;
     public bool CloudflaredRunning => _cloudflared.IsRunning;
 
     public TrayApp()
     {
         _cfg = Config.Load();
-        _lmStudio = new Supervisor("lm-studio", _cfg.LmStudio);
         _dino = new Supervisor("dino-worker", _cfg.DinoWorker);
         _cloudflared = new Supervisor("cloudflared", _cfg.Cloudflared);
 
@@ -118,17 +116,21 @@ class TrayApp : ApplicationContext
     public void TurnGpuOn()
     {
         _gpuOn = true;
-        _lmStudio.Start();
+        RunLms("start --bind 0.0.0.0 --cors");
+        if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
+            Task.Run(() => RunLmsLoad(_cfg.LmsModel));
         _dino.Start();
         UpdateIcon();
-        _tray.ShowBalloonTip(3000, "GPU Share", "Inference started — LM Studio + dino-worker running", ToolTipIcon.Info);
+        _tray.ShowBalloonTip(3000, "GPU Share", "Inference started — loading model into VRAM…", ToolTipIcon.Info);
     }
 
     public void TurnGpuOff()
     {
         TurnTunnelOff();
         _gpuOn = false;
-        _lmStudio.Stop();
+        if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
+            RunLmsUnloadAll();
+        RunLms("stop");
         _dino.Stop();
         UpdateIcon();
         _tray.ShowBalloonTip(3000, "GPU Share", "Gaming mode — VRAM fully free", ToolTipIcon.Info);
@@ -153,9 +155,58 @@ class TrayApp : ApplicationContext
         UpdateIcon();
     }
 
+    private void RunLms(string command)
+    {
+        var lmsPath = Environment.ExpandEnvironmentVariables(_cfg.LmsPath);
+        var psi = new ProcessStartInfo(lmsPath)
+        {
+            Arguments = $"server {command}",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        };
+        try { Process.Start(psi); }
+        catch (Exception ex) { Supervisor.Log($"lms server {command} failed: {ex.Message}"); }
+    }
+
+    private void RunLmsLoad(string modelKey)
+    {
+        var lmsPath = Environment.ExpandEnvironmentVariables(_cfg.LmsPath);
+        var psi = new ProcessStartInfo(lmsPath)
+        {
+            Arguments = $"load \"{modelKey}\" --gpu max -y",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        };
+        try { Process.Start(psi)?.WaitForExit(); }
+        catch (Exception ex) { Supervisor.Log($"lms load failed: {ex.Message}"); }
+    }
+
+    private void RunLmsUnloadAll()
+    {
+        var lmsPath = Environment.ExpandEnvironmentVariables(_cfg.LmsPath);
+        var psi = new ProcessStartInfo(lmsPath)
+        {
+            Arguments = "unload --all",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        };
+        try { Process.Start(psi)?.WaitForExit(); }
+        catch (Exception ex) { Supervisor.Log($"lms unload failed: {ex.Message}"); }
+    }
+
+    private static bool IsPortOpen(int port)
+    {
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            return tcp.ConnectAsync("127.0.0.1", port).Wait(400);
+        }
+        catch { return false; }
+    }
+
     private void StopAll()
     {
-        _lmStudio.Stop();
+        RunLms("stop");
         _dino.Stop();
         _cloudflared.Stop();
     }
