@@ -10,13 +10,19 @@
 #   /dino/* → dino-worker on the GPU PC (DINOv3 image embeddings, prefix stripped)
 :8088 {
 	@unauthed not header Authorization "Bearer {$SHARED_TOKEN}"
-	respond @unauthed "Unauthorized" 401
 
-	handle_path /dino/* {
-		reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_DINO_PORT:8000}
-	}
+	# route preserves written order — without it Caddy's default directive order
+	# runs handle/handle_path BEFORE respond, letting every request bypass the
+	# token check straight into the proxy.
+	route {
+		respond @unauthed "Unauthorized" 401
 
-	handle {
-		reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_LMSTUDIO_PORT:1234}
+		handle_path /dino/* {
+			reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_DINO_PORT:8000}
+		}
+
+		handle {
+			reverse_proxy {$GPU_PC_HOST}:{$GPU_PC_LMSTUDIO_PORT:1234}
+		}
 	}
 }
