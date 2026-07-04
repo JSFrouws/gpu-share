@@ -26,6 +26,9 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
+      # Public-gate flag dir, shared with the life-os api container which
+      # creates/removes gate/tunnel-enabled via /machine/tunnel/on|off.
+      - ./gate:/gate:ro
     ports:
       # Single front door for the life-app backend and LAN clients.
       # Also the target for the GPU PC's cloudflared inference tunnel (Phase 3).

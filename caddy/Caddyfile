@@ -11,10 +11,23 @@
 :8088 {
 	@unauthed not header Authorization "Bearer {$SHARED_TOKEN}"
 
+	# Public gate — requests arriving via the Cloudflare tunnel always carry
+	# CF-Connecting-IP; LAN requests never do. Tunnel traffic is only served
+	# while /gate/tunnel-enabled exists (flag toggled by the life-app tunnel
+	# button through the life-os api, shared host dir ./gate).
+	@publicBlocked {
+		header CF-Connecting-IP *
+		not file {
+			root /gate
+			try_files tunnel-enabled
+		}
+	}
+
 	# route preserves written order — without it Caddy's default directive order
 	# runs handle/handle_path BEFORE respond, letting every request bypass the
 	# token check straight into the proxy.
 	route {
+		respond @publicBlocked "Public access disabled" 403
 		respond @unauthed "Unauthorized" 401
 
 		handle_path /dino/* {
