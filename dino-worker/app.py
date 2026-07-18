@@ -13,9 +13,25 @@ models stay lazy-loaded on first use.
 """
 import asyncio
 import base64
+import glob
 import io
 import os
+import site
 import time
+
+if os.name == "nt":
+    # ctranslate2 (faster-whisper) needs cuBLAS/cuDNN DLLs at runtime. On this
+    # Windows box they come from the pip packages (nvidia-cudnn-cu12) and
+    # torch's bundled libs — register those dirs for DLL resolution up front,
+    # before the first lazy faster_whisper import.
+    for _sp in site.getsitepackages():
+        for _pattern in (os.path.join(_sp, "nvidia", "*", "bin"),
+                         os.path.join(_sp, "torch", "lib")):
+            for _d in glob.glob(_pattern):
+                try:
+                    os.add_dll_directory(_d)
+                except OSError:
+                    pass
 
 import httpx
 import torch
@@ -29,7 +45,11 @@ IDLE_EVICT_SECONDS = int(os.environ.get("DINO_IDLE_EVICT_SECONDS", "600"))
 SHARED_TOKEN = os.environ.get("SHARED_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
+# large-v3 (~2.9 GB CT2 fp16): best accuracy, chosen over the ~1.6 GB turbo
+# distil — a 3090 decodes short voice commands near-instantly either way. Note
+# it exceeds the 1500 MB preload gate, so it JIT-loads on first use (~10-20 s)
+# instead of being warmed by /whisper/preload.
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 WHISPER_COMPUTE = os.environ.get(
     "WHISPER_COMPUTE", "int8_float16" if DEVICE == "cuda" else "int8"
 )

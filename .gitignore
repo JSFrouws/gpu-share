@@ -5,3 +5,5 @@ dist/
 agent/bin/
 agent/obj/
 agent/agent.log
+.venv/
+*.whl
