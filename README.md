@@ -158,12 +158,13 @@ Caddy (`caddy:2-alpine`) auto-updates the same way via Watchtower.
 
 | Path | Backend | Purpose |
 |---|---|---|
-| `POST /v1/chat/completions` | LM Studio | LLM chat |
+| `POST /v1/chat/completions` | LM Studio | LLM chat (incl. vision/OCR with a multimodal model) |
 | `POST /v1/embeddings` | LM Studio | Text embeddings |
-| `POST /v1/audio/transcriptions` | LM Studio | STT (Whisper) |
 | `POST /v1/audio/speech` | LM Studio | TTS |
 | `POST /dino/embed` | dino-worker | DINOv3 image embeddings |
-| `GET /dino/healthz` | dino-worker | Worker health / loaded state |
+| `POST /dino/v1/audio/transcriptions` | dino-worker | STT (faster-whisper; OpenAI-compatible — LM Studio doesn't ship STT yet) |
+| `POST /dino/whisper/preload` | dino-worker | Warm whisper into memory (≤ `WHISPER_PRELOAD_MAX_MB` only) |
+| `GET /dino/healthz` | dino-worker | Worker health / loaded state (dino + whisper) |
 
 All requests require `Authorization: Bearer <SHARED_TOKEN>`.
 

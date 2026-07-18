@@ -7,17 +7,26 @@ replace the running exe on the GPU PC; not part of the GHCR/Watchtower pipeline)
 
 ## Open
 
-- **Remote STT (whisper)** — LM Studio 0.4.18 does NOT implement
-  `POST /v1/audio/transcriptions` (verified: same "Unexpected endpoint" error
-  as a bogus path; upstream feature request lmstudio-ai/lms#320 still open, and
-  lmstudio.ai/transcribe says "coming soon"). `whisper-large-v3` appears in
-  `/v1/models` but is only usable inside the LM Studio UI. Options, in order
-  of preference:
-  1. Wait for the LM Studio update — the Caddy proxy forwards all paths, so
-     the endpoint will work remotely the moment LM Studio ships it. Zero work.
-  2. Run a sidecar STT server on the GPU PC (e.g. `speaches` /
-     faster-whisper-server, OpenAI-compatible) supervised by the agent like
-     dino-worker, and route `/v1/audio/*` to it in the Caddyfile.
+- **Remote STT (whisper) — deploy step on the GPU PC.** The dino-worker now
+  implements `POST /v1/audio/transcriptions` (faster-whisper, OpenAI-compatible,
+  lazy-load + idle-evict) plus `POST /whisper/preload` (called by life-os right
+  after inference-on; only preloads models ≤ `WHISPER_PRELOAD_MAX_MB`, default
+  1500). Life-os reaches it through the EXISTING Caddy `/dino/*` route
+  (`/dino/v1/audio/transcriptions`), so no Caddy or C# agent change is needed.
+  Remaining manual step on the GPU PC:
+  ```bat
+  cd gpu-share & git pull
+  .venv\Scripts\activate
+  pip install -r dino-worker\requirements.txt   # adds faster-whisper
+  ```
+  then restart the dino-worker (tray agent inference off/on, or kill uvicorn).
+  Env knobs (worker): `WHISPER_MODEL` (default `large-v3-turbo`),
+  `WHISPER_COMPUTE` (default `int8_float16` on cuda), `WHISPER_IDLE_EVICT_SECONDS`
+  (600), `WHISPER_PRELOAD_MAX_MB` (1500). When LM Studio ships its own
+  `/v1/audio/transcriptions` (lmstudio-ai/lms#320), life-os can point
+  `GPU_STT_URL` back at the plain `/v1` route — same request/response shape.
+  (LM Studio 0.4.18 verified NOT to implement the endpoint; whisper-large-v3
+  in /v1/models is UI-only.)
 
 ## Done
 
