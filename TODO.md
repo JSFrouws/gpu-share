@@ -7,28 +7,26 @@ replace the running exe on the GPU PC; not part of the GHCR/Watchtower pipeline)
 
 ## Open
 
-- **Remote STT (whisper) — deploy step on the GPU PC.** The dino-worker now
-  implements `POST /v1/audio/transcriptions` (faster-whisper, OpenAI-compatible,
-  lazy-load + idle-evict) plus `POST /whisper/preload` (called by life-os right
-  after inference-on; only preloads models ≤ `WHISPER_PRELOAD_MAX_MB`, default
-  1500). Life-os reaches it through the EXISTING Caddy `/dino/*` route
-  (`/dino/v1/audio/transcriptions`), so no Caddy or C# agent change is needed.
-  Remaining manual step on the GPU PC:
-  ```bat
-  cd gpu-share & git pull
-  .venv\Scripts\activate
-  pip install -r dino-worker\requirements.txt   # adds faster-whisper
-  ```
-  then restart the dino-worker (tray agent inference off/on, or kill uvicorn).
-  Env knobs (worker): `WHISPER_MODEL` (default `large-v3-turbo`),
-  `WHISPER_COMPUTE` (default `int8_float16` on cuda), `WHISPER_IDLE_EVICT_SECONDS`
-  (600), `WHISPER_PRELOAD_MAX_MB` (1500). When LM Studio ships its own
-  `/v1/audio/transcriptions` (lmstudio-ai/lms#320), life-os can point
-  `GPU_STT_URL` back at the plain `/v1` route — same request/response shape.
-  (LM Studio 0.4.18 verified NOT to implement the endpoint; whisper-large-v3
-  in /v1/models is UI-only.)
+(none)
 
 ## Done
+
+- **Remote STT (whisper)** — deployed 2026-07-18. The dino-worker implements
+  `POST /v1/audio/transcriptions` (faster-whisper `large-v3`, int8_float16 on
+  cuda, lazy-load + 600s idle-evict) plus `POST /whisper/preload` (fired by
+  life-os after inference-on; refuses models > `WHISPER_PRELOAD_MAX_MB` 1500 —
+  large-v3 is 2948 MB so it JIT-loads on first use). Life-os reaches it via the
+  existing Caddy `/dino/*` route; no Caddy/C# changes. On the GPU PC: venv at
+  `gpu-share\.venv` (py3.12, torch 2.5.1+cu124 via manually-fetched wheel —
+  pip's own TLS stream kept failing on the 2.4 GB download — plus
+  nvidia-cudnn/cublas-cu12 wheels registered through an `os.add_dll_directory`
+  bootstrap in app.py), model in the HF cache (`HF_HUB_DISABLE_SYMLINKS=1`
+  needed on Windows), agent's `dist/agent/appsettings.json` dinoWorker block
+  filled with the real paths so inference-on/off supervises the worker.
+  Verified live: cold transcription 8.5 s (JIT load), warm 1.4 s, correct
+  Dutch text; preload gate refusal confirmed; Caddy 401-gates the route.
+  When LM Studio ships STT (lmstudio-ai/lms#320; 0.4.18 verified without it),
+  life-os can point `GPU_STT_URL` at the plain `/v1` base — same shape.
 
 - **`GET /models/state`** — proxies LM Studio's native `GET /api/v0/models`
   (verified working on 0.4.18), which includes per-model
