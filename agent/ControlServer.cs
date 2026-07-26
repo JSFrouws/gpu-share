@@ -104,6 +104,7 @@ class ControlServer : IDisposable
                     cloudflared = _tray.CloudflaredRunning,
                     vramUsedMb = vramUsed,
                     vramTotalMb = vramTotal,
+                    idleSeconds = TrayApp.IdleSeconds(),
                 }), "application/json");
                 return;
             }
@@ -114,6 +115,24 @@ class ControlServer : IDisposable
                 case "/gpu/off": _tray.Post(_tray.TurnGpuOff);   Reply(res, 200, "ok"); return;
                 case "/tunnel/on":  _tray.Post(_tray.TurnTunnelOn);  Reply(res, 200, "ok"); return;
                 case "/tunnel/off": _tray.Post(_tray.TurnTunnelOff); Reply(res, 200, "ok"); return;
+                case "/notify":
+                    {
+                        // Pre-shutdown warnings from the server's scheduler.
+                        var body = new StreamReader(req.InputStream).ReadToEnd();
+                        var title = "GPU Share";
+                        var msg = body;
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(body);
+                            if (doc.RootElement.TryGetProperty("title", out var t))
+                                title = t.GetString() ?? title;
+                            if (doc.RootElement.TryGetProperty("message", out var m))
+                                msg = m.GetString() ?? "";
+                        }
+                        catch { /* plain-text body is fine too */ }
+                        _tray.Notify(title, msg, warning: true);
+                        Reply(res, 200, "ok"); return;
+                    }
                 case "/power/shutdown":
                     Process.Start(new ProcessStartInfo("shutdown") { Arguments = "/s /t 5", UseShellExecute = true });
                     Reply(res, 200, "ok"); return;

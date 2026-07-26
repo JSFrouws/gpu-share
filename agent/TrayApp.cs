@@ -11,6 +11,38 @@ class TrayApp : ApplicationContext
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr handle);
 
+    // "Is somebody actually working on this box right now?" — the only signal
+    // that reliably answers it is real user input. CPU load can't tell a person
+    // typing from a background render.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    /// <summary>Seconds since the last keyboard/mouse input, or -1 if unknown.</summary>
+    public static int IdleSeconds()
+    {
+        try
+        {
+            var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+            if (!GetLastInputInfo(ref lii)) return -1;
+            return (int)((Environment.TickCount64 - lii.dwTime) / 1000);
+        }
+        catch { return -1; }
+    }
+
+    /// <summary>Tray balloon from the server (the pre-shutdown warnings).</summary>
+    public void Notify(string title, string message, bool warning = false)
+    {
+        Post(() => _tray.ShowBalloonTip(10000, title, message,
+            warning ? ToolTipIcon.Warning : ToolTipIcon.Info));
+    }
+
     private readonly Config _cfg;
     private readonly NotifyIcon _tray;
     private readonly ToolStripMenuItem _statusItem;
