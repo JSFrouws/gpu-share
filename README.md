@@ -163,8 +163,9 @@ Caddy (`caddy:2-alpine`) auto-updates the same way via Watchtower.
 | `POST /v1/audio/speech` | LM Studio | TTS |
 | `POST /dino/embed` | dino-worker | DINOv3 image embeddings |
 | `POST /dino/v1/audio/transcriptions` | dino-worker | STT (faster-whisper; OpenAI-compatible — LM Studio doesn't ship STT yet) |
-| `POST /dino/whisper/preload` | dino-worker | Warm whisper into memory (≤ `WHISPER_PRELOAD_MAX_MB` only) |
-| `GET /dino/healthz` | dino-worker | Worker health / loaded state (dino + whisper) |
+| `POST /dino/whisper/preload` | dino-worker | Warm whisper into VRAM and pin it beside the chat model (needs `WHISPER_MIN_FREE_VRAM_MB` free, default 3000 — i.e. a chat model under ~21 GB) |
+| `POST /dino/whisper/evict` | dino-worker | Unpin + drop whisper, so a chat-model load gets first claim on VRAM |
+| `GET /dino/healthz` | dino-worker | Worker health / loaded state (dino + whisper, free VRAM) |
 
 All requests require `Authorization: Bearer <SHARED_TOKEN>`.
 

@@ -152,7 +152,7 @@ class TrayApp : ApplicationContext
             if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
             {
                 Supervisor.Log("resume: reloading model into VRAM");
-                RunLmsLoad(_cfg.LmsModel);
+                LoadChatModelThenWhisper();
             }
         });
     }
@@ -177,11 +177,46 @@ class TrayApp : ApplicationContext
     {
         _gpuOn = true;
         RunLms("start --bind 0.0.0.0 --cors");
-        if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
-            Task.Run(() => RunLmsLoad(_cfg.LmsModel));
         _dino.Start();
+        if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
+            Task.Run(() => LoadChatModelThenWhisper());
         UpdateIcon();
         _tray.ShowBalloonTip(3000, "GPU Share", "Inference started — loading model into VRAM…", ToolTipIcon.Info);
+    }
+
+    /// <summary>Chat model first, speech-to-text into whatever VRAM is left.
+    /// Ordering is the point: the LLM must claim its memory before whisper is
+    /// asked to move in, and whisper is evicted up front so a reload never has
+    /// to fight the ~2 GB it was holding. The worker itself decides whether
+    /// there is room (see /whisper/preload's free-VRAM gate), so a big model
+    /// simply leaves whisper lazy-loading as before.</summary>
+    private void LoadChatModelThenWhisper()
+    {
+        CallDino("/whisper/evict");
+        RunLmsLoad(_cfg.LmsModel);
+        if (_gpuOn) CallDino("/whisper/preload");
+    }
+
+    /// <summary>Best-effort POST to the local dino/whisper worker.</summary>
+    private void CallDino(string path)
+    {
+        try
+        {
+            var port = 8000;
+            var args = _cfg.DinoWorker.Args;
+            for (var i = 0; i < args.Length - 1; i++)
+                if (args[i] == "--port" && int.TryParse(args[i + 1], out var p)) port = p;
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            if (_cfg.DinoWorker.Env.TryGetValue("SHARED_TOKEN", out var token)
+                && !string.IsNullOrWhiteSpace(token))
+                http.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+            var res = http.PostAsync($"http://127.0.0.1:{port}{path}", null)
+                          .GetAwaiter().GetResult();
+            Supervisor.Log($"dino {path}: {(int)res.StatusCode} "
+                           + res.Content.ReadAsStringAsync().GetAwaiter().GetResult().Trim());
+        }
+        catch (Exception ex) { Supervisor.Log($"dino {path} failed: {ex.Message}"); }
     }
 
     public void TurnGpuOff()

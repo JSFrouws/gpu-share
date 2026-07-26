@@ -7,9 +7,10 @@ auth (same SHARED_TOKEN the Caddy front door enforces).
 Whisper (faster-whisper) fills the gap until LM Studio ships its own
 /v1/audio/transcriptions — the endpoint here is OpenAI-compatible so life-os
 can switch backends without changes once that lands. `POST /whisper/preload`
-warms the model into memory (used by life-os right after inference is enabled),
-but only when the downloaded model is at most WHISPER_PRELOAD_MAX_MB — bigger
-models stay lazy-loaded on first use.
+warms the model into memory and PINS it (the idle evictor leaves pinned models
+alone) so speech-to-text stays instant alongside the chat model; it self-gates
+on free VRAM. `POST /whisper/evict` releases it again — the GPU agent calls
+that before loading a chat model, so the LLM always gets first claim on VRAM.
 """
 import asyncio
 import base64
@@ -46,15 +47,19 @@ SHARED_TOKEN = os.environ.get("SHARED_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # large-v3 (~2.9 GB CT2 fp16): best accuracy, chosen over the ~1.6 GB turbo
-# distil — a 3090 decodes short voice commands near-instantly either way. Note
-# it exceeds the 1500 MB preload gate, so it JIT-loads on first use (~10-20 s)
-# instead of being warmed by /whisper/preload.
+# distil — a 3090 decodes short voice commands near-instantly either way.
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 WHISPER_COMPUTE = os.environ.get(
     "WHISPER_COMPUTE", "int8_float16" if DEVICE == "cuda" else "int8"
 )
 WHISPER_IDLE_EVICT_SECONDS = int(os.environ.get("WHISPER_IDLE_EVICT_SECONDS", "600"))
-WHISPER_PRELOAD_MAX_MB = int(os.environ.get("WHISPER_PRELOAD_MAX_MB", "1500"))
+# What decides whether whisper can live next to the chat model is FREE VRAM,
+# not the file size — so the preload gate measures the card *after* the LLM has
+# claimed its share. 3000 MB of headroom on a 24 GB 3090 is the same thing as
+# "the chat model stays under ~21 GB", which holds for the 26B/31B quants we
+# run. WHISPER_PRELOAD_MAX_MB is an optional extra disk-size cap; 0 = off.
+WHISPER_PRELOAD_MAX_MB = int(os.environ.get("WHISPER_PRELOAD_MAX_MB", "0"))
+WHISPER_MIN_FREE_VRAM_MB = int(os.environ.get("WHISPER_MIN_FREE_VRAM_MB", "3000"))
 
 app = FastAPI(title="dino-worker", version="1.1")
 
@@ -105,6 +110,20 @@ async def _idle_evictor():
 _whisper_lock = asyncio.Lock()
 _whisper = None
 _whisper_last_used = 0.0
+# Pinned = preloaded on purpose to sit next to the chat model; the idle evictor
+# leaves it alone so speech-to-text keeps answering instantly.
+_whisper_pinned = False
+
+
+def _free_vram_mb() -> float | None:
+    """Free memory on the active CUDA device, or None on CPU / when unavailable."""
+    if DEVICE != "cuda":
+        return None
+    try:
+        free, _total = torch.cuda.mem_get_info()
+        return free / (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _whisper_available() -> bool:
@@ -161,6 +180,8 @@ async def _whisper_idle_evictor():
     while True:
         await asyncio.sleep(min(60, WHISPER_IDLE_EVICT_SECONDS))
         async with _whisper_lock:
+            if _whisper_pinned:
+                continue      # deliberately resident next to the chat model
             if _whisper is not None and time.time() - _whisper_last_used > WHISPER_IDLE_EVICT_SECONDS:
                 _evict_whisper()
 
@@ -214,12 +235,15 @@ async def healthz():
         "device": DEVICE,
         "loaded": _model is not None,
         "idle_evict_seconds": IDLE_EVICT_SECONDS,
+        "free_vram_mb": round(_free_vram_mb()) if _free_vram_mb() is not None else None,
         "whisper": {
             "available": _whisper_available(),
             "model": WHISPER_MODEL,
             "compute": WHISPER_COMPUTE,
             "loaded": _whisper is not None,
+            "pinned": _whisper_pinned,
             "idle_evict_seconds": WHISPER_IDLE_EVICT_SECONDS,
+            "min_free_vram_mb": WHISPER_MIN_FREE_VRAM_MB,
         },
     }
 
@@ -251,25 +275,53 @@ async def transcriptions(
 
 @app.post("/whisper/preload", dependencies=[Depends(_require_token)])
 async def whisper_preload():
-    """Warm the whisper model into memory — called by life-os right after GPU
-    inference is enabled. Only preloads when the downloaded model is at most
-    WHISPER_PRELOAD_MAX_MB; bigger models (and not-yet-downloaded ones) stay
-    lazy-loaded on first transcription instead."""
+    """Warm whisper into VRAM and pin it there, so it answers instantly next to
+    the chat model. Called by the GPU agent once the chat model has finished
+    loading (and by life-os right after inference is enabled). Gated on the
+    free VRAM left on the card at that moment — if the chat model took nearly
+    everything, whisper stays lazy-loaded instead of fighting it for memory."""
+    global _whisper_pinned
     if not _whisper_available():
         return {"preloading": False, "reason": "faster-whisper not installed"}
-    if _whisper is not None:
-        return {"preloading": False, "reason": "already loaded"}
     size_mb = _whisper_model_dir_mb()
     if size_mb is None:
         return {"preloading": False, "reason": "model not downloaded yet (loads on first use)"}
-    if size_mb > WHISPER_PRELOAD_MAX_MB:
+    if WHISPER_PRELOAD_MAX_MB and size_mb > WHISPER_PRELOAD_MAX_MB:
         return {
             "preloading": False,
             "reason": f"model is {size_mb:.0f} MB > {WHISPER_PRELOAD_MAX_MB} MB cap "
                       "(loads on first use)",
         }
+    if _whisper is not None:
+        _whisper_pinned = True     # keep an already-loaded model resident
+        return {"preloading": False, "pinned": True, "reason": "already loaded"}
+    free_mb = _free_vram_mb()
+    if free_mb is not None and free_mb < WHISPER_MIN_FREE_VRAM_MB:
+        return {
+            "preloading": False,
+            "free_vram_mb": round(free_mb),
+            "reason": f"only {free_mb:.0f} MB VRAM free, need "
+                      f"{WHISPER_MIN_FREE_VRAM_MB} MB (loads on first use)",
+        }
+    _whisper_pinned = True
     asyncio.create_task(_ensure_whisper())
-    return {"preloading": True, "model": WHISPER_MODEL, "size_mb": round(size_mb)}
+    return {"preloading": True, "pinned": True, "model": WHISPER_MODEL,
+            "size_mb": round(size_mb),
+            "free_vram_mb": round(free_mb) if free_mb is not None else None}
+
+
+@app.post("/whisper/evict", dependencies=[Depends(_require_token)])
+async def whisper_evict():
+    """Unpin and drop whisper from VRAM. The GPU agent calls this before loading
+    a chat model so the LLM gets first claim on the card; whisper is preloaded
+    again afterwards if there's room left."""
+    global _whisper_pinned
+    async with _whisper_lock:
+        was_loaded = _whisper is not None
+        _whisper_pinned = False
+        if was_loaded:
+            _evict_whisper()
+    return {"evicted": was_loaded}
 
 
 @app.post("/embed", dependencies=[Depends(_require_token)])
