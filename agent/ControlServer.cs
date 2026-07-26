@@ -91,6 +91,10 @@ class ControlServer : IDisposable
 
             if (req.HttpMethod == "GET" && path == "/status")
             {
+                // vramUsedMb makes "model loaded but living in system RAM" (the
+                // post-resume eviction state) visible instead of silent: inference
+                // mode on + a near-empty card means the weights aren't on the GPU.
+                var (vramUsed, vramTotal) = VramMb();
                 Reply(res, 200, JsonSerializer.Serialize(new
                 {
                     gpuHandler = _tray.GpuHandlerOn,
@@ -98,6 +102,8 @@ class ControlServer : IDisposable
                     lmStudio = _tray.LmRunning,
                     dinoWorker = _tray.DinoRunning,
                     cloudflared = _tray.CloudflaredRunning,
+                    vramUsedMb = vramUsed,
+                    vramTotalMb = vramTotal,
                 }), "application/json");
                 return;
             }
@@ -112,19 +118,69 @@ class ControlServer : IDisposable
                     Process.Start(new ProcessStartInfo("shutdown") { Arguments = "/s /t 5", UseShellExecute = true });
                     Reply(res, 200, "ok"); return;
                 case "/power/hibernate":
-                    Process.Start(new ProcessStartInfo("shutdown") { Arguments = "/h", UseShellExecute = true });
-                    Reply(res, 200, "ok"); return;
+                    // Application.SetSuspendState honors the hibernate flag directly (unlike the
+                    // rundll32 SetSuspendState entry point, which ignores its arguments).
+                    Reply(res, 200, "ok");
+                    SuspendAfterUnload(PowerState.Hibernate);
+                    return;
                 case "/power/sleep":
-                    // shutdown.exe has no sleep (S3) flag — SetSuspendState via rundll32 is the
-                    // standard command-line trigger. Args: hibernate=0, forceCritical=1, disableWakeEvent=0.
-                    Process.Start(new ProcessStartInfo("rundll32.exe") { Arguments = "powrprof.dll,SetSuspendState 0,1,0", UseShellExecute = true });
-                    Reply(res, 200, "ok"); return;
+                    // PowerState.Suspend gives true S3 sleep regardless of whether hibernation is
+                    // enabled. The old rundll32 SetSuspendState route ignored its args and hibernated
+                    // whenever hibernation was enabled on the machine.
+                    Reply(res, 200, "ok");
+                    SuspendAfterUnload(PowerState.Suspend);
+                    return;
             }
 
             Reply(res, 404, "Not found");
         }
         catch (Exception ex) { Reply(res, 500, ex.Message); }
         finally { res.Close(); }
+    }
+
+    private static (int used, int total) _vram = (-1, -1);
+    private static DateTime _vramAt = DateTime.MinValue;
+
+    /// <summary>Card memory via nvidia-smi, cached briefly (status is polled).
+    /// (-1, -1) when nvidia-smi isn't available.</summary>
+    private static (int, int) VramMb()
+    {
+        if (DateTime.UtcNow - _vramAt < TimeSpan.FromSeconds(5)) return _vram;
+        try
+        {
+            var psi = new ProcessStartInfo("nvidia-smi")
+            {
+                Arguments = "--query-gpu=memory.used,memory.total --format=csv,noheader,nounits",
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            };
+            using var p = Process.Start(psi);
+            var line = p?.StandardOutput.ReadLine() ?? "";
+            p?.WaitForExit(3000);
+            var parts = line.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length >= 2 && int.TryParse(parts[0], out var u) && int.TryParse(parts[1], out var t))
+                _vram = (u, t);
+        }
+        catch { _vram = (-1, -1); }
+        _vramAt = DateTime.UtcNow;
+        return _vram;
+    }
+
+    /// <summary>Drop the model, then suspend. Answering the caller first matters:
+    /// SetSuspendState does not return until the machine wakes up again, so a
+    /// reply afterwards would leave life-os waiting on a dead socket until then.
+    /// The unload keeps ~20 GB of weights from being evicted into system RAM
+    /// (see TrayApp's sleep/wake notes); PowerModeChanged covers the same ground
+    /// for sleeps we don't initiate, and a second unload is harmless.</summary>
+    private void SuspendAfterUnload(PowerState state)
+    {
+        Task.Run(() =>
+        {
+            try { _tray.PrepareForSuspend(); } catch { /* never block the suspend */ }
+            Thread.Sleep(1500);   // let VRAM actually drain before the GPU powers down
+            Application.SetSuspendState(state, false, false);
+        });
     }
 
     private static void Reply(HttpListenerResponse r, int code, string body, string ct = "text/plain")

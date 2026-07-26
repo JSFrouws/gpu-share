@@ -17,6 +17,14 @@ class Config
     public string LmsPath { get; set; } = @"%USERPROFILE%\.lmstudio\bin\lms.exe";
     // Model key as shown by 'lms ls'. Leave empty to skip auto-load (model must be pre-loaded in LM Studio GUI).
     public string LmsModel { get; set; } = "";
+    // Context length in tokens passed to 'lms load -c'. 0 = let LM Studio use the model default.
+    // Larger context = more VRAM (KV cache). Use 'lms load <model> --gpu max -c <n> --estimate-only'
+    // to size it against your card.
+    public int LmsContextLength { get; set; } = 0;
+    // Seconds to wait after resuming from sleep/hibernate before reloading the
+    // model. The NVIDIA driver re-enumerates the GPU asynchronously on wake; a
+    // load fired too early can land while VRAM is still unavailable.
+    public int ResumeReloadDelaySeconds { get; set; } = 20;
     public ProcessDef DinoWorker { get; set; } = new()
     {
         Executable = @".venv\Scripts\uvicorn.exe",

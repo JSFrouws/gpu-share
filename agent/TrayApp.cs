@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace GpuAgent;
 
@@ -65,7 +66,7 @@ class TrayApp : ApplicationContext
         {
             if (MessageBox.Show("Hibernate this PC?", "GPU Agent",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
-            { StopAll(); Process.Start(new ProcessStartInfo("shutdown") { Arguments = "/h", UseShellExecute = true }); }
+            { StopAll(); Application.SetSuspendState(PowerState.Hibernate, false, false); }
         };
 
         var exitItem = new ToolStripMenuItem("Exit Agent");
@@ -98,6 +99,62 @@ class TrayApp : ApplicationContext
 
         // ── control server ───────────────────────────────────────────────────
         _server = new ControlServer(_cfg.ControlPort, _cfg.BearerToken, this);
+
+        // Catch EVERY suspend/resume, not just the ones we trigger ourselves
+        // (power plan idle, lid, the Windows start menu, the life-app button).
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    // ── sleep / wake ─────────────────────────────────────────────────────────
+    // When the GPU powers down for S3/hibernate, WDDM evicts every VRAM
+    // allocation into the owning process's system RAM so it can be restored
+    // later. For a loaded LLM that is ~20 GB copied into LM Studio's working
+    // set — and on resume the driver does NOT migrate it back: the weights stay
+    // in host RAM, the machine sits at 97% memory, and any inference crawls
+    // across PCIe instead of running on the card. Dropping the model before the
+    // machine suspends makes the suspend cheap and the wake clean; we reload it
+    // afterwards so inference mode comes back exactly as it was.
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        switch (e.Mode)
+        {
+            case PowerModes.Suspend:
+                PrepareForSuspend();
+                break;
+            case PowerModes.Resume:
+                if (_gpuOn) Post(ReloadAfterResume);
+                break;
+        }
+    }
+
+    /// <summary>Free VRAM before the machine suspends. Safe to call twice, and
+    /// a no-op in gaming mode (nothing of ours is loaded).</summary>
+    public void PrepareForSuspend()
+    {
+        if (!_gpuOn) return;
+        Supervisor.Log("suspend: unloading model so VRAM isn't evicted into system RAM");
+        RunLmsUnloadAll();
+    }
+
+    private void ReloadAfterResume()
+    {
+        Task.Run(() =>
+        {
+            Thread.Sleep(Math.Max(0, _cfg.ResumeReloadDelaySeconds) * 1000);
+            if (!_gpuOn) return;                       // switched to gaming mode while asleep
+            if (!IsPortOpen(1234)) RunLms("start --bind 0.0.0.0 --cors");
+            for (var i = 0; i < 20 && !IsPortOpen(1234); i++) Thread.Sleep(500);
+            // Unload first: if the agent missed the suspend notification the
+            // model still counts as "loaded" while its memory sits in host RAM,
+            // and a plain load would be a no-op that leaves it there.
+            RunLmsUnloadAll();
+            if (!string.IsNullOrWhiteSpace(_cfg.LmsModel))
+            {
+                Supervisor.Log("resume: reloading model into VRAM");
+                RunLmsLoad(_cfg.LmsModel);
+            }
+        });
     }
 
     // ── thread-safe command queue (called from ControlServer thread) ─────────
@@ -174,9 +231,10 @@ class TrayApp : ApplicationContext
     private void RunLmsLoad(string modelKey)
     {
         var lmsPath = Environment.ExpandEnvironmentVariables(_cfg.LmsPath);
+        var ctx = _cfg.LmsContextLength > 0 ? $" -c {_cfg.LmsContextLength}" : "";
         var psi = new ProcessStartInfo(lmsPath)
         {
-            Arguments = $"load \"{modelKey}\" --gpu max -y",
+            Arguments = $"load \"{modelKey}\" --gpu max{ctx} -y",
             CreateNoWindow = true,
             UseShellExecute = false,
         };
@@ -279,6 +337,7 @@ class TrayApp : ApplicationContext
     {
         if (disposing)
         {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;   // static event: must detach
             _timer.Dispose();
             _server.Dispose();
             StopAll();
