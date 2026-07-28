@@ -187,7 +187,8 @@ async def _whisper_idle_evictor():
 
 
 def _transcribe_blocking(
-    audio: bytes, language: str | None, prompt: str | None, words: bool = False
+    audio: bytes, language: str | None, prompt: str | None, words: bool = False,
+    detect_language: bool = False,
 ) -> dict:
     """Transcribe one clip. With `words`, whisper also returns per-word times.
 
@@ -196,8 +197,28 @@ def _transcribe_blocking(
     resolution the diarizer produced. vad_filter restores original timestamps, so
     the times stay on the same timebase as the diarizer's.
     """
+    from faster_whisper import decode_audio
+
+    # Decode once and hand the array to both calls below. detect_language() takes
+    # samples, not a file, and decoding a 15-minute block twice is wasteful.
+    samples = decode_audio(io.BytesIO(audio), sampling_rate=16000)
+
+    detected = probability = None
+    if detect_language:
+        # Deliberately separate from the transcription, which keeps its forced
+        # language: auto-detect on a noisy household block is far less reliable
+        # than "this house speaks Dutch", so detection is used only to DECIDE
+        # whether a block is worth keeping, never to pick the decoding language.
+        # Several windows rather than one, with VAD, so a few seconds of foreign
+        # audio at the start doesn't mislabel a whole conversation.
+        try:
+            detected, probability, _all = _whisper.detect_language(
+                audio=samples, vad_filter=True, language_detection_segments=4)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[whisper] language detection failed: {exc}")
+
     segments, _info = _whisper.transcribe(
-        io.BytesIO(audio),
+        samples,
         language=language or None,
         initial_prompt=prompt or None,
         vad_filter=True,
@@ -213,6 +234,10 @@ def _transcribe_blocking(
     result = {"text": " ".join(t for t in texts if t).strip()}
     if words:
         result["words"] = out_words
+    if detect_language:
+        result["language"] = detected
+        result["language_probability"] = (round(float(probability), 3)
+                                          if probability is not None else None)
     return result
 
 
@@ -275,12 +300,16 @@ async def transcriptions(
     language: str = Form("nl"),
     prompt: str = Form(""),
     word_timestamps: bool = Form(False),
+    detect_language: bool = Form(False),
 ):
     """OpenAI-compatible speech-to-text (faster-whisper). Lazy-loads the model
     on first use; response shape matches /v1/audio/transcriptions ({"text"}).
 
     `word_timestamps` additionally returns a flat "words" list [{w,start,end,p}] —
-    life-os's speaker pipeline joins those against diarization turns."""
+    life-os's speaker pipeline joins those against diarization turns.
+    `detect_language` adds "language"/"language_probability", so a caller can drop
+    a block that turns out to be a film in another language rather than archive a
+    transcript of it."""
     if not _whisper_available():
         raise HTTPException(
             status_code=501,
@@ -292,7 +321,8 @@ async def transcriptions(
         raise HTTPException(status_code=400, detail="Empty audio")
     await _ensure_whisper()
     return await asyncio.get_event_loop().run_in_executor(
-        None, _transcribe_blocking, audio, language, prompt, word_timestamps
+        None, _transcribe_blocking, audio, language, prompt, word_timestamps,
+        detect_language,
     )
 
 
