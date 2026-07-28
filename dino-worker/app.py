@@ -186,14 +186,34 @@ async def _whisper_idle_evictor():
                 _evict_whisper()
 
 
-def _transcribe_blocking(audio: bytes, language: str | None, prompt: str | None) -> str:
+def _transcribe_blocking(
+    audio: bytes, language: str | None, prompt: str | None, words: bool = False
+) -> dict:
+    """Transcribe one clip. With `words`, whisper also returns per-word times.
+
+    Word timestamps are what speaker diarization needs to attribute text: segment
+    boundaries straddle turn boundaries, so joining on segments throws away the
+    resolution the diarizer produced. vad_filter restores original timestamps, so
+    the times stay on the same timebase as the diarizer's.
+    """
     segments, _info = _whisper.transcribe(
         io.BytesIO(audio),
         language=language or None,
         initial_prompt=prompt or None,
         vad_filter=True,
+        word_timestamps=bool(words),
     )
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    texts: list[str] = []
+    out_words: list[dict] = []
+    for seg in segments:
+        texts.append(seg.text.strip())
+        for w in (getattr(seg, "words", None) or []):
+            out_words.append({"w": w.word.strip(), "start": float(w.start),
+                              "end": float(w.end), "p": round(float(w.probability), 3)})
+    result = {"text": " ".join(t for t in texts if t).strip()}
+    if words:
+        result["words"] = out_words
+    return result
 
 
 @app.on_event("startup")
@@ -254,9 +274,13 @@ async def transcriptions(
     model: str = Form(""),          # accepted for OpenAI compatibility; ignored
     language: str = Form("nl"),
     prompt: str = Form(""),
+    word_timestamps: bool = Form(False),
 ):
     """OpenAI-compatible speech-to-text (faster-whisper). Lazy-loads the model
-    on first use; response shape matches /v1/audio/transcriptions ({"text"})."""
+    on first use; response shape matches /v1/audio/transcriptions ({"text"}).
+
+    `word_timestamps` additionally returns a flat "words" list [{w,start,end,p}] —
+    life-os's speaker pipeline joins those against diarization turns."""
     if not _whisper_available():
         raise HTTPException(
             status_code=501,
@@ -267,10 +291,9 @@ async def transcriptions(
     if not audio:
         raise HTTPException(status_code=400, detail="Empty audio")
     await _ensure_whisper()
-    text = await asyncio.get_event_loop().run_in_executor(
-        None, _transcribe_blocking, audio, language, prompt
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _transcribe_blocking, audio, language, prompt, word_timestamps
     )
-    return {"text": text}
 
 
 @app.post("/whisper/preload", dependencies=[Depends(_require_token)])
